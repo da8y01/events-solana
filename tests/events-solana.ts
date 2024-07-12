@@ -2,9 +2,15 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { EventsSolana } from "../target/types/events_solana";
 import { BN } from "bn.js";
-import { createMint, createFundedWallet, createAssociatedTokenAccount } from './utils';
+import {
+  createMint,
+  createFundedWallet,
+  createAssociatedTokenAccount,
+} from "./utils";
 import { PublicKey, Keypair } from "@solana/web3.js";
 import { getAssociatedTokenAddress, getAccount } from "@solana/spl-token";
+import { assert } from "chai";
+
 
 describe("events-solana", () => {
   // Configure the client to use the local cluster.
@@ -63,22 +69,38 @@ describe("events-solana", () => {
       program.programId
     );
 
-    // creates a new wallet funded with 3 SOL 
+    // creates a new wallet funded with 3 SOL
     alice = await createFundedWallet(provider, 3);
     // create alice accepted mint ata with 100 accepted mint
-    // Accepted mint = USDC  -> alice wallet = 100 USDC 
-    aliceAcceptedMintATA = await createAssociatedTokenAccount(provider,acceptedMint,500, alice);
+    // Accepted mint = USDC  -> alice wallet = 100 USDC
+    aliceAcceptedMintATA = await createAssociatedTokenAccount(
+      provider,
+      acceptedMint,
+      500,
+      alice
+    );
     // find alice event mint ata (only finds address)
-    aliceEventMintATA = await getAssociatedTokenAddress(eventMint, alice.publicKey);
+    aliceEventMintATA = await getAssociatedTokenAddress(
+      eventMint,
+      alice.publicKey
+    );
 
     // find provided (event organizer) wallet acceptend mint ata
     // only the address
-    walletAcceptedMintATA = await getAssociatedTokenAddress(acceptedMint, provider.wallet.publicKey);
+    walletAcceptedMintATA = await getAssociatedTokenAddress(
+      acceptedMint,
+      provider.wallet.publicKey
+    );
 
     // create bob wallet with lamports
     bob = await createFundedWallet(provider);
     // create bob accepted mint ata
-    bobAcceptedMintATA = await createAssociatedTokenAccount(provider,acceptedMint,500, bob)
+    bobAcceptedMintATA = await createAssociatedTokenAccount(
+      provider,
+      acceptedMint,
+      500,
+      bob
+    );
     // find bob event mint ata
     bobEventMintATA = await getAssociatedTokenAddress(eventMint, bob.publicKey);
   });
@@ -266,5 +288,75 @@ describe("events-solana", () => {
       walletAcceptedMintATA // event organizer Accepted mint account (USDC account)
     );
     console.log("Organizer USDC amount: ", organizerUSDCBalance.amount);
+  });
+
+  // TEST: Close Event
+  it("event organizer should close event", async () => {
+    // act
+    await program.methods
+      .closeEvent()
+      .accounts({
+        event: eventPublicKey,
+        authority: provider.wallet.publicKey,
+      })
+      .rpc();
+
+    // show new event info
+    const eventAccount = await program.account.event.fetch(eventPublicKey);
+    console.log("Event is active: ", eventAccount.active);
+  });
+
+  // TEST: Can't Buy 2 Tickets
+  it("Alice can't buy tickets", async () => {
+    let error: anchor.AnchorError;
+    const quantity = new BN(2);
+    try {
+      await program.methods
+        .buyTickets(quantity)
+        .accounts({
+          payerAcceptedMintAta: aliceAcceptedMintATA,
+          event: eventPublicKey,
+          authority: alice.publicKey,
+          gainVault: gainVault,
+        })
+        .signers([alice])
+        .rpc();
+    } catch (err) {
+      error = err;
+    }
+    assert.equal(error.error.errorCode.code, "EventClosed");
+    console.log("You can't buy tickets, the Event is already closed");
+  });
+
+  // TEST: Withdraw earnings
+  it("Alice Should withdraw earnings", async () => {
+    // show total sponsorships
+    const eventAccount = await program.account.event.fetch(eventPublicKey);
+    console.log("Event total sponsorships: ", eventAccount.sponsors.toNumber());
+
+    // show event gain vault amount
+    let gainVaultAccount = await getAccount(provider.connection, gainVault);
+    console.log("Event gain vault amount: ", gainVaultAccount.amount);
+
+    // show Alice sponsorship tokens
+    let aliceTokens = await getAccount(provider.connection, aliceEventMintATA);
+    console.log("Alice sponsorship tokens: ", aliceTokens.amount);
+
+    await program.methods
+      .withdrawEarnings()
+      .accounts({
+        userEventMintAta: aliceEventMintATA,
+        event: eventPublicKey,
+        authority: alice.publicKey,
+        gainVault: gainVault,
+        userAcceptedMintAta: aliceAcceptedMintATA,
+        eventMint: eventMint,
+      })
+      .signers([alice])
+      .rpc();
+
+    // show event gain vault amount
+    gainVaultAccount = await getAccount(provider.connection, gainVault);
+    console.log("Event gain vault amount: ", gainVaultAccount.amount);
   });
 });
